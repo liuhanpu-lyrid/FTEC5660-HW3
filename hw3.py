@@ -57,7 +57,7 @@ def load_env_file(path: Path = Path(".env")) -> None:
 
 # Choose any 3 of the 15 points, e.g. CHOSEN_POINTS = [1, 7, 15]. Your agent
 # gives a PASS or FAIL verdict on these 3 points only, with your own rule for each.
-CHOSEN_POINTS: list[int] = []  ### YOUR CODE HERE
+CHOSEN_POINTS: list[int] = [1, 5, 6]  ### YOUR CODE HERE
 
 
 def build_agent() -> Any:
@@ -71,8 +71,40 @@ def build_agent() -> Any:
     from .env. Each company has its own tools (see ``analyze_companies``), so
     you will probably create one tool-calling agent per company there.
     """
-    ### YOUR CODE HERE
-    return None
+    import os
+    from langchain_deepseek import ChatDeepSeek
+    from langchain_core.prompts import ChatPromptTemplate
+    from langchain_core.output_parsers import StrOutputParser
+
+    # Initialize the DeepSeek model
+    if not os.getenv("DEEPSEEK_API_KEY"):
+        return None
+
+    model = ChatDeepSeek(
+        model=MODEL_NAME,
+        temperature=0,
+        timeout=30,
+        max_retries=1
+    )
+
+    # Prompt for generating the financial analysis
+    prompt = ChatPromptTemplate.from_messages([
+        (
+            "system",
+            "You are a financial analyst applying Philip Fisher's "
+            "investment framework. You will receive financial "
+            "indicators and their calculated PASS/FAIL verdicts. "
+            "Write a concise English summary explaining the "
+            "three verdicts using the provided evidence. "
+            "Do not change the verdicts or invent financial data."
+        ),
+        (
+            "human",
+            "Analyze the following financial evidence:\n{evidence}"
+        )
+    ])
+
+    return prompt | model | StrOutputParser()
 
 
 async def analyze_companies(agent: Any, companies: dict[str, list[Any]]) -> dict[str, dict[str, Any]]:
@@ -108,9 +140,169 @@ async def analyze_companies(agent: Any, companies: dict[str, list[Any]]) -> dict
     entry for it: an exception here means no results.csv, which scores zero.
     You may analyse companies in parallel (e.g. ``asyncio.gather``).
     """
-    ### YOUR CODE HERE
-    _ = agent
-    return {name: {"points": {}, "summary": ""} for name in companies}
+    
+    query = """
+    SELECT
+        (SELECT SUM(amount)
+         FROM orders
+         WHERE order_date >= '2023-01-01'
+           AND order_date < '2024-01-01') AS r2023,
+
+        (SELECT SUM(amount)
+         FROM orders
+         WHERE order_date >= '2024-01-01'
+           AND order_date < '2025-01-01') AS r2024,
+
+        (SELECT SUM(amount)
+         FROM orders
+         WHERE order_date >= '2025-01-01'
+           AND order_date < '2026-01-01') AS r2025,
+
+        (SELECT SUM(
+             cost_of_sales + selling_admin + research_development
+         )
+         FROM monthly_costs
+         WHERE month >= '2024-01'
+           AND month < '2025-01') AS c2024,
+
+        (SELECT SUM(
+             cost_of_sales + selling_admin + research_development
+         )
+         FROM monthly_costs
+         WHERE month >= '2025-01'
+           AND month < '2026-01') AS c2025,
+
+        m.revenue_growth_2y_pct AS industry_growth,
+        m.operating_margin_pct AS industry_margin
+
+    FROM company c
+    JOIN industry_medians m
+      ON c.industry = m.industry
+    """
+
+    semaphore = asyncio.Semaphore(3)
+
+    async def analyze_one(name, tools):
+
+        try:
+            # Step 1: Retrieve data using the provided SQL tool
+            sql_tool = tools[2]
+            result = sql_tool.invoke({"query": query})
+
+            # Step 2: Parse SQL results
+            lines = result.strip().splitlines()
+
+            if len(lines) < 2 or result.startswith("SQL error:"):
+                raise ValueError(f"SQL query failed: {result}")
+
+            columns = [
+                x.strip() for x in lines[0].split("|")
+            ]
+
+            values = [
+                x.strip() for x in lines[1].split("|")
+            ]
+
+            data = {
+                k: float(v)
+                for k, v in zip(columns, values)
+            }
+
+            # Step 3: Extract financial data
+            r2023 = data["r2023"]
+            r2024 = data["r2024"]
+            r2025 = data["r2025"]
+
+            c2024 = data["c2024"]
+            c2025 = data["c2025"]
+
+            industry_growth = data["industry_growth"]
+            industry_margin = data["industry_margin"]
+
+            # Step 4: Calculate financial indicators
+            revenue_growth = (r2025 / r2023 - 1) * 100
+
+            margin_2024 = (
+                (r2024 - c2024) / r2024
+            ) * 100
+
+            margin_2025 = (
+                (r2025 - c2025) / r2025
+            ) * 100
+
+            # Step 5: Apply Fisher's rules
+            point_1 = (
+                "PASS" if revenue_growth > industry_growth
+                else "FAIL"
+            )
+
+            point_5 = (
+                "PASS" if margin_2025 > industry_margin
+                else "FAIL"
+            )
+
+            point_6 = (
+                "PASS" if margin_2025 > margin_2024
+                else "FAIL"
+            )
+
+            points = {
+                1: point_1,
+                5: point_5,
+                6: point_6
+            }
+
+            # Step 6: Prepare evidence for the LLM
+            evidence = (
+                f"Company: {name}\n"
+                f"Point 1: {point_1}. "
+                f"Revenue growth 2023-2025: {revenue_growth:.2f}%. "
+                f"Industry median: {industry_growth:.2f}%.\n"
+
+                f"Point 5: {point_5}. "
+                f"2025 operating margin: {margin_2025:.2f}%. "
+                f"Industry median: {industry_margin:.2f}%.\n"
+
+                f"Point 6: {point_6}. "
+                f"2024 margin: {margin_2024:.2f}%. "
+                f"2025 margin: {margin_2025:.2f}%."
+            )
+
+            # Step 7: Generate the summary using DeepSeek
+            summary = evidence
+
+            if agent is not None:
+                try:
+                    async with semaphore:
+                        summary = await asyncio.wait_for(
+                            agent.ainvoke({"evidence": evidence}),
+                            timeout=45
+                        )
+                except Exception:
+                    summary = evidence
+
+            return name, {
+                "points": points,
+                "summary": summary
+            }
+
+        except Exception as e:
+            print(f"Error analyzing {name}: {e}")
+
+            return name, {
+                "points": {1: "FAIL", 5: "FAIL", 6: "FAIL"},
+                "summary": "Analysis failed."
+            }
+
+    # Step 8: Analyze all companies
+    results = await asyncio.gather(
+        *[
+            analyze_one(name, tools)
+            for name, tools in companies.items()
+        ]
+    )
+
+    return dict(results)
 
 
 # Everything below is provided runner/scoring code. No edits are needed.

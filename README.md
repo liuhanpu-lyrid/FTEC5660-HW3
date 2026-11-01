@@ -171,13 +171,59 @@ companies with the same tools and the same answer key rules, but different
 names and wording, and scores your 3 points only.
 
 ## Homework 3 solution:
-> to students: this is your report, see the homework description.
 
 ### My 3 points and rules
-> for each point: why you chose it, your PASS rule in one or two sentences, and the evidence it uses. Quote Fisher where it helps.
+
+I chose Fisher Points 1, 5, and 6 because they can be evaluated using quantitative financial data, allowing the agent to make consistent decisions based on clear rules.
+
+Point 1: Market Potential for Sales Growth
+
+I chose this point because revenue growth reflects a company's ability to expand its business. A company receives PASS if its revenue growth from 2023 to 2025 exceeds the industry median. Revenue is calculated from the orders table, and the benchmark comes from industry_medians.
+
+Point 5: Worthwhile Profit Margin
+
+I selected this point because strong revenue growth does not necessarily mean strong profitability. A company receives PASS if its FY2025 operating margin is higher than the industry median. Operating margin is calculated as (revenue - cost of sales - selling admin - R&D) / revenue, using the orders, monthly_costs, and industry_medians tables.
+
+Point 6: Maintaining or Improving Profit Margins
+
+I chose this point to evaluate whether a company can improve its profitability over time. A company receives PASS if its FY2025 operating margin is higher than its FY2024 operating margin. The calculation uses annual revenue from orders and operating costs from monthly_costs.
 
 ### Design
-> a visualization of your agent design and one paragraph describing it.
+
+```mermaid
+flowchart TD
+    A["Company Tools"] --> B["SQL Query Tool"]
+    B --> C["Retrieve Financial Data"]
+    C --> D["Python Calculations"]
+
+    D --> E["Point 1: Revenue Growth"]
+    D --> F["Point 5: Profit Margin"]
+    D --> G["Point 6: Margin Improvement"]
+
+    E --> H["PASS / FAIL Verdicts"]
+    F --> H
+    G --> H
+
+    H --> I["DeepSeek-v4-flash: Generate Summary"]
+    H --> J["Final Results"]
+    I --> J
+    J --> K["results.csv"]
+```
+
+The agent combines LangChain tool usage, SQL queries, Python calculations, and DeepSeek-generated explanations. For each company, it first uses the provided sql_query tool to retrieve aggregated revenue, operating costs, and industry medians. Python then calculates the financial indicators and applies the three predefined PASS/FAIL rules. The results and supporting evidence are passed to deepseek-v4-flash through a LangChain prompt chain to generate an English summary. This approach avoids relying on the language model for numerical calculations. The implementation also supports asynchronous processing and handles errors separately for each company. Since all three selected points use financial data, no interviews are required.
 
 ### Results
-> your point score on `public_test`, the companies where your verdicts disagree with the public answers, and why.
+
+I tested the agent on the 20 companies in public_test using:
+
+python3 hw3.py --data-folder public_test
+
+The program successfully generated results.csv with the following results:
+
+Processed 20 companies. Wrote results.csv. Your points: 1, 5, 6. Point accuracy: 60/60 (balanced: 100.0%).
+
+There were no disagreements between my agent's predictions and the public ground-truth answers for the three selected points.
+
+For example, Ashgrove Labs received PASS for Points 1 and 5 because its revenue growth and operating margin exceeded their respective industry medians. However, Point 6 received FAIL because its operating margin decreased from 14.50% in 2024 to 13.36% in 2025. This shows that the three criteria evaluate different aspects of financial performance.
+
+The 100% public-test score suggests that my evaluation rules align well with the public answer key. Using SQL and Python for calculations also helps avoid arithmetic errors from the language model. However, performance on the private test set is not guaranteed, since it contains unseen companies.
